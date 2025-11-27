@@ -1,118 +1,106 @@
-Hash or IPFS CID representing the proof content
-        string metadataURI;      Block time of creation
-        bool verified;           Proof-level credibility (community-weighted)
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.26;
+
+/**
+ * @title ProofMesh
+ * @notice A decentralized platform for creating, linking, and approving projects in the ProofMesh ecosystem.
+ */
+contract ProofMesh {
+
+    address public admin;
+    uint256 public projectCount;
+
+    struct Project {
+        uint256 id;
+        address creator;
+        string projectHash;      // IPFS hash or unique project identifier
+        string metadataURI;      // Optional metadata URI
+        uint256 timestamp;
+        bool approved;
+        bool rejected;
+        uint256[] linkedProjects; // Projects linked to this one
     }
 
-    mapping(uint256 => Proof) public proofs;
-    mapping(address => uint256[]) public userProofs;
-    mapping(address => uint256) public userReputation;
+    mapping(uint256 => Project) public projects;
+    mapping(address => uint256[]) public userProjects;
 
-    event ProofCreated(uint256 indexed id, address indexed creator, string proofHash, string metadataURI);
-    event ProofVerified(uint256 indexed id, address verifier, uint256 reputationAdded);
-    event ReputationUpdated(address indexed user, uint256 newReputation);
-    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event ProjectCreated(uint256 indexed id, address indexed creator, string projectHash, string metadataURI);
+    event ProjectLinked(uint256 indexed fromId, uint256 indexed toId);
+    event ProjectApproved(uint256 indexed id);
+    event ProjectRejected(uint256 indexed id, string reason);
+    event AdminChanged(address indexed oldAdmin, address indexed newAdmin);
 
-    modifier onlyOwner() {
-        require(msg.sender == owner, "Not contract owner");
+    modifier onlyAdmin() {
+        require(msg.sender == admin, "ProofMesh: NOT_ADMIN");
         _;
     }
 
-    modifier onlyCreator(uint256 _id) {
-        require(proofs[_id].creator == msg.sender, "Not proof creator");
+    modifier projectExists(uint256 id) {
+        require(id > 0 && id <= projectCount, "ProofMesh: PROJECT_NOT_FOUND");
         _;
     }
 
     constructor() {
-        owner = msg.sender;
+        admin = msg.sender;
     }
 
-    /**
-     * @notice Create a new proof entry
-     * @param _proofHash The hash or content ID of the proof
-     * @param _metadataURI Optional metadata or reference file URI
-     */
-    function createProof(string memory _proofHash, string memory _metadataURI) external {
-        require(bytes(_proofHash).length > 0, "Invalid proof hash");
+    function createProject(string calldata projectHash, string calldata metadataURI) external returns (uint256) {
+        require(bytes(projectHash).length > 0, "ProofMesh: EMPTY_HASH");
 
-        totalProofs++;
-        proofs[totalProofs] = Proof({
-            id: totalProofs,
+        projectCount++;
+        projects[projectCount] = Project({
+            id: projectCount,
             creator: msg.sender,
-            proofHash: _proofHash,
-            metadataURI: _metadataURI,
+            projectHash: projectHash,
+            metadataURI: metadataURI,
             timestamp: block.timestamp,
-            verified: false,
-            reputationScore: 0
+            approved: false,
+            rejected: false,
+            linkedProjects: new uint256 
         });
 
-        userProofs[msg.sender].push(totalProofs);
+        userProjects[msg.sender].push(projectCount);
 
-        emit ProofCreated(totalProofs, msg.sender, _proofHash, _metadataURI);
+        emit ProjectCreated(projectCount, msg.sender, projectHash, metadataURI);
+        return projectCount;
     }
 
-    /**
-     * @notice Verify a proof and assign reputation to its creator
-     * @param _id Proof ID
-     * @param _repScore Reputation points to assign to creator
-     */
-    function verifyProof(uint256 _id, uint256 _repScore) external onlyOwner {
-        Proof storage proof = proofs[_id];
-        require(!proof.verified, "Already verified");
+    function linkProjects(uint256 fromId, uint256 toId) external projectExists(fromId) projectExists(toId) {
+        require(fromId != toId, "ProofMesh: SELF_LINK");
+        require(projects[fromId].creator == msg.sender || msg.sender == admin, "ProofMesh: UNAUTHORIZED");
 
-        proof.verified = true;
-        proof.reputationScore = _repScore;
+        projects[fromId].linkedProjects.push(toId);
+        projects[toId].linkedProjects.push(fromId);
 
-        userReputation[proof.creator] += _repScore;
-
-        emit ProofVerified(_id, msg.sender, _repScore);
-        emit ReputationUpdated(proof.creator, userReputation[proof.creator]);
+        emit ProjectLinked(fromId, toId);
+        emit ProjectLinked(toId, fromId);
     }
 
-    /**
-     * @notice Retrieve a proof record
-     * @param _id Proof ID
-     * @return The full Proof struct
-     */
-    function getProof(uint256 _id) external view returns (Proof memory) {
-        require(_id > 0 && _id <= totalProofs, "Invalid proof ID");
-        return proofs[_id];
+    function approveProject(uint256 id) external onlyAdmin projectExists(id) {
+        Project storage p = projects[id];
+        require(!p.approved && !p.rejected, "ProofMesh: FINALIZED");
+        p.approved = true;
+        emit ProjectApproved(id);
     }
 
-    /**
-     * @notice Get all proof IDs created by a specific user
-     * @param _user Address of creator
-     * @return List of proof IDs
-     */
-    function getUserProofs(address _user) external view returns (uint256[] memory) {
-        return userProofs[_user];
+    function rejectProject(uint256 id, string calldata reason) external onlyAdmin projectExists(id) {
+        Project storage p = projects[id];
+        require(!p.approved && !p.rejected, "ProofMesh: FINALIZED");
+        p.rejected = true;
+        emit ProjectRejected(id, reason);
     }
 
-    /**
-     * @notice Update contract ownership
-     * @param _newOwner Address of new owner
-     */
-    function transferOwnership(address _newOwner) external onlyOwner {
-        require(_newOwner != address(0), "Invalid new owner");
-        emit OwnershipTransferred(owner, _newOwner);
-        owner = _newOwner;
+    function getProject(uint256 id) external view projectExists(id) returns (Project memory) {
+        return projects[id];
     }
 
-    /**
-     * @notice View total reputation score of a user
-     * @param _user Address of user
-     * @return Reputation points
-     */
-    function getUserReputation(address _user) external view returns (uint256) {
-        return userReputation[_user];
+    function getUserProjects(address user) external view returns (uint256[] memory) {
+        return userProjects[user];
     }
 
-    /**
-     * @notice Get total number of proofs created globally
-     */
-    function getTotalProofs() external view returns (uint256) {
-        return totalProofs;
+    function changeAdmin(address newAdmin) external onlyAdmin {
+        require(newAdmin != address(0), "ProofMesh: ZERO_ADMIN");
+        emit AdminChanged(admin, newAdmin);
+        admin = newAdmin;
     }
 }
-// 
-End
-// 
